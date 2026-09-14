@@ -25,6 +25,7 @@ import { readEventBodyAction } from "../modules/events/actions/read-event-body.a
 import { EventPresenter } from "../modules/events/event.presenter.js";
 import { findDeliveryAction } from "../modules/deliveries/actions/find-delivery.action.js";
 import { listDeliveriesAction } from "../modules/deliveries/actions/list-deliveries.action.js";
+import { readDeliveryResponseBodyAction } from "../modules/deliveries/actions/read-delivery-response-body.action.js";
 import { DeliveryPresenter } from "../modules/deliveries/delivery.presenter.js";
 import type { DeliveryDocument } from "../modules/deliveries/delivery.model.js";
 import { createRouteAction } from "../modules/routes/actions/create-route.action.js";
@@ -143,7 +144,8 @@ export function createApiRouter(database: Db, environment: Environment) {
 
   router.get("/deliveries/:deliveryId", asyncRoute(async (request, response) => {
     const delivery = await findDeliveryAction(database, readRouteParameter(request.params.deliveryId));
-    response.status(200).json({ delivery: DeliveryPresenter.present(delivery) });
+    const responseBody = readDeliveryResponseBodyAction(delivery, environment);
+    response.status(200).json({ delivery: DeliveryPresenter.present(delivery), responseBody });
   }));
 
   router.use((_request, _response, next) => {

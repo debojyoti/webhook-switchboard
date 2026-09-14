@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { Delivery, Endpoint, Event, Route } from "@contract/api.contract";
-import { Api } from "./api.js";
+import { Api, type Base64Body } from "./api.js";
 
 type View = "endpoints" | "events" | "deliveries";
 type Toast = { tone: "error" | "success"; message: string } | null;
@@ -16,6 +16,8 @@ export function App() {
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState<Toast>(null);
   const [isRouteFormOpen, setRouteFormOpen] = useState(false);
+  const [viewingEventId, setViewingEventId] = useState<string | null>(null);
+  const [viewingDeliveryId, setViewingDeliveryId] = useState<string | null>(null);
 
   useEffect(() => { void Api.session().then((value) => setAuthenticated(value.authenticated)).catch(() => setAuthenticated(false)); }, []);
   // Initial data loading intentionally happens only after authentication changes.
@@ -76,11 +78,13 @@ export function App() {
       </aside>
       <main className="workbench">
         <div className="tab-strip"><span className="tab is-open"><span className="tab-dot" /> {activeView === "endpoints" ? selectedEndpoint?.name ?? "New endpoint" : activeView === "events" ? "Incoming events" : "Deliveries"}<button>×</button></span></div>
-        {activeView === "endpoints" ? <EndpointWorkbench endpoint={selectedEndpoint} routes={routes} onOpenRouteForm={() => setRouteFormOpen(true)} onToggleRoute={async (route) => { try { const result = await Api.toggleRoute(route); setRoutes((current) => current.map((item) => item.id === route.id ? result.route : item)); notify("success", `Route ${result.route.enabled ? "enabled" : "disabled"}`); } catch (reason) { notify("error", messageFrom(reason)); } }} /> : <LogWorkbench view={activeView} events={events} deliveries={deliveries} />}
+        {activeView === "endpoints" ? <EndpointWorkbench endpoint={selectedEndpoint} routes={routes} onOpenRouteForm={() => setRouteFormOpen(true)} onToggleRoute={async (route) => { try { const result = await Api.toggleRoute(route); setRoutes((current) => current.map((item) => item.id === route.id ? result.route : item)); notify("success", `Route ${result.route.enabled ? "enabled" : "disabled"}`); } catch (reason) { notify("error", messageFrom(reason)); } }} /> : <LogWorkbench view={activeView} events={events} deliveries={deliveries} onSelectEvent={setViewingEventId} onSelectDelivery={setViewingDeliveryId} />}
       </main>
       <aside className="inspector-panel"><Inspector activeView={activeView} endpoint={selectedEndpoint} events={events} deliveries={deliveries} /></aside>
     </div>
     {isRouteFormOpen && selectedEndpoint && <RouteDialog endpoint={selectedEndpoint} onClose={() => setRouteFormOpen(false)} onCreate={async (url, headerName, headerValue) => { try { await Api.createRoute(selectedEndpoint.id, url, headerName ? [{ name: headerName, value: headerValue }] : []); await loadRoutes(selectedEndpoint.id); await refresh(); setRouteFormOpen(false); notify("success", "Route added"); } catch (reason) { notify("error", messageFrom(reason)); } }} />}
+    {viewingEventId && <EventDetailDialog eventId={viewingEventId} onClose={() => setViewingEventId(null)} onError={(reason) => notify("error", messageFrom(reason))} />}
+    {viewingDeliveryId && <DeliveryDetailDialog deliveryId={viewingDeliveryId} onClose={() => setViewingDeliveryId(null)} onError={(reason) => notify("error", messageFrom(reason))} />}
     {toast && <div className={`toast ${toast.tone}`}>{toast.tone === "success" ? "✓" : "!"} {toast.message}</div>}
   </div>;
 }
@@ -91,9 +95,9 @@ function EndpointWorkbench({ endpoint, routes, onOpenRouteForm, onToggleRoute }:
   return <section className="workbench-content"><div className="page-header"><div><p className="eyebrow">ENDPOINT</p><h1>{endpoint.name}</h1><p className="subtle">Routes and observability for this incoming webhook URL.</p></div><button className="primary-button" onClick={onOpenRouteForm}>+ Add route</button></div><div className="metric-row"><Metric label="Enabled routes" value={String(enabled)} hint={`${routes.length} total configured`} /><Metric label="Delivery model" value="Fan-out" hint="One attempt per route" /><Metric label="Retention" value="30 days" hint="Events & delivery history" /></div><section className="surface public-url-card"><div><p className="section-kicker">PUBLIC WEBHOOK URL</p><code>{endpoint.publicUrl}</code></div><button onClick={() => void navigator.clipboard.writeText(endpoint.publicUrl)}>Copy URL</button></section><section className="routes-section"><div className="section-heading"><div><h2>Routes</h2><p>Enabled routes receive every inbound request.</p></div><span className="count-badge">{routes.length}</span></div><div className="data-table"><div className="table-head"><span>Status</span><span>Destination</span><span>Custom headers</span><span /></div>{routes.length ? routes.map((route) => <div className="table-row" key={route.id}><span><button className={`switch ${route.enabled ? "is-on" : ""}`} onClick={() => onToggleRoute(route)} aria-label="Toggle route"><i /></button></span><code>{route.url}</code><span className="header-count">{route.customHeaders.length ? `${route.customHeaders.length} configured` : "—"}</span><button className="row-action" onClick={() => onToggleRoute(route)}>{route.enabled ? "Disable" : "Enable"}</button></div>) : <div className="table-empty">No routes yet. Add a destination to begin forwarding.</div>}</div></section></section>;
 }
 
-function LogWorkbench({ view, events, deliveries }: { view: "events" | "deliveries"; events: Event[]; deliveries: Delivery[] }) {
+function LogWorkbench({ view, events, deliveries, onSelectEvent, onSelectDelivery }: { view: "events" | "deliveries"; events: Event[]; deliveries: Delivery[]; onSelectEvent: (eventId: string) => void; onSelectDelivery: (deliveryId: string) => void }) {
   const isEvents = view === "events"; const rows = isEvents ? events : deliveries;
-  return <section className="workbench-content"><div className="page-header"><div><p className="eyebrow">OBSERVABILITY</p><h1>{isEvents ? "Incoming events" : "Deliveries"}</h1><p className="subtle">Most recent activity across every Endpoint.</p></div><button className="ghost-button">Filter</button></div><div className="log-toolbar"><span className="live-indicator"><i /> Live stream</span><span className="muted">Last 30 days</span><input placeholder="Filter results" /></div><div className="data-table log-table">{isEvents ? <><div className="table-head"><span>Method</span><span>Endpoint</span><span>Payload</span><span>Received</span></div>{(rows as Event[]).map((event) => <div className="table-row" key={event.id}><span><b className="method-badge">{event.method}</b></span><span>{event.endpointName}</span><span className="muted">{event.bodySizeBytes.toLocaleString()} B · {event.bodyContentType ?? "unknown"}</span><time>{relativeTime(event.receivedAt)}</time></div>)}</> : <><div className="table-head"><span>Result</span><span>Destination</span><span>Response</span><span>Duration</span></div>{(rows as Delivery[]).map((delivery) => <div className="table-row" key={delivery.id}><span><b className={`outcome-badge ${delivery.outcome}`}>{delivery.outcome.replace("_", " ")}</b></span><code>{delivery.routeUrl}</code><span>{delivery.responseStatus ?? delivery.errorMessage ?? "—"}</span><time>{delivery.durationMs} ms</time></div>)}</>}{!rows.length && <div className="table-empty">Nothing to show yet.</div>}</div></section>;
+  return <section className="workbench-content"><div className="page-header"><div><p className="eyebrow">OBSERVABILITY</p><h1>{isEvents ? "Incoming events" : "Deliveries"}</h1><p className="subtle">Most recent activity across every Endpoint. Click a row for the exact request or response.</p></div><button className="ghost-button">Filter</button></div><div className="log-toolbar"><span className="live-indicator"><i /> Live stream</span><span className="muted">Last 30 days</span><input placeholder="Filter results" /></div><div className="data-table log-table">{isEvents ? <><div className="table-head"><span>Method</span><span>Endpoint</span><span>Payload</span><span>Received</span></div>{(rows as Event[]).map((event) => <div className="table-row is-clickable" key={event.id} role="button" tabIndex={0} onClick={() => onSelectEvent(event.id)} onKeyDown={(keyEvent) => { if (keyEvent.key === "Enter" || keyEvent.key === " ") { keyEvent.preventDefault(); onSelectEvent(event.id); } }}><span><b className="method-badge">{event.method}</b></span><span>{event.endpointName}</span><span className="muted">{event.bodySizeBytes.toLocaleString()} B · {event.bodyContentType ?? "unknown"}</span><time>{relativeTime(event.receivedAt)}</time></div>)}</> : <><div className="table-head"><span>Result</span><span>Destination</span><span>Response</span><span>Duration</span></div>{(rows as Delivery[]).map((delivery) => <div className="table-row is-clickable" key={delivery.id} role="button" tabIndex={0} onClick={() => onSelectDelivery(delivery.id)} onKeyDown={(keyEvent) => { if (keyEvent.key === "Enter" || keyEvent.key === " ") { keyEvent.preventDefault(); onSelectDelivery(delivery.id); } }}><span><b className={`outcome-badge ${delivery.outcome}`}>{delivery.outcome.replace("_", " ")}</b></span><code>{delivery.routeUrl}</code><span>{delivery.responseStatus ?? delivery.errorMessage ?? "—"}</span><time>{delivery.durationMs} ms</time></div>)}</>}{!rows.length && <div className="table-empty">Nothing to show yet.</div>}</div></section>;
 }
 
 function Inspector({ activeView, endpoint, events, deliveries }: { activeView: View; endpoint: Endpoint | null; events: Event[]; deliveries: Delivery[] }) {
@@ -102,6 +106,82 @@ function Inspector({ activeView, endpoint, events, deliveries }: { activeView: V
 }
 
 function RouteDialog({ endpoint, onClose, onCreate }: { endpoint: Endpoint; onClose: () => void; onCreate: (url: string, headerName: string, headerValue: string) => void }) { return <div className="dialog-backdrop" role="presentation"><form className="dialog" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); onCreate(String(data.get("url")), String(data.get("headerName") ?? ""), String(data.get("headerValue") ?? "")); }}><div className="dialog-heading"><div><p className="eyebrow">NEW ROUTE</p><h2>{endpoint.name}</h2></div><button type="button" className="icon-button" onClick={onClose}>×</button></div><label>Destination URL<input name="url" type="url" required placeholder="https://api.example.com/webhooks" autoFocus /></label><div className="form-divider">Optional request header</div><label>Header name<input name="headerName" placeholder="X-Webhook-Key" /></label><label>Header value<input name="headerValue" placeholder="Stored encrypted" /></label><div className="dialog-actions"><button type="button" className="ghost-button" onClick={onClose}>Cancel</button><button className="primary-button">Add route</button></div></form></div>; }
+
+function EventDetailDialog({ eventId, onClose, onError }: { eventId: string; onClose: () => void; onError: (reason: unknown) => void }) {
+  const [detail, setDetail] = useState<{ event: Event; body: Base64Body | null; deliveries: Delivery[] } | null>(null);
+  const [expandedDeliveryId, setExpandedDeliveryId] = useState<string | null>(null);
+  const [deliveryBodies, setDeliveryBodies] = useState<Record<string, Base64Body | null>>({});
+
+  useEffect(() => { void Api.event(eventId).then(setDetail).catch(onError); }, [eventId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function toggleDelivery(delivery: Delivery) {
+    if (expandedDeliveryId === delivery.id) { setExpandedDeliveryId(null); return; }
+    setExpandedDeliveryId(delivery.id);
+    if (delivery.responseBodyAvailable && !(delivery.id in deliveryBodies)) {
+      try {
+        const result = await Api.delivery(delivery.id);
+        setDeliveryBodies((current) => ({ ...current, [delivery.id]: result.responseBody }));
+      } catch (reason) { onError(reason); }
+    }
+  }
+
+  return <div className="dialog-backdrop" role="presentation"><div className="dialog detail-dialog"><div className="dialog-heading"><div><p className="eyebrow">INCOMING EVENT</p><h2>{detail ? `${detail.event.method} · ${detail.event.endpointName}` : "Loading…"}</h2></div><button type="button" className="icon-button" onClick={onClose}>×</button></div>
+    {!detail ? <p className="muted">Loading event…</p> : <div className="dialog-body">
+      <dl className="detail-meta"><dt>Received</dt><dd>{relativeTime(detail.event.receivedAt)}</dd><dt>Query</dt><dd>{detail.event.query || "—"}</dd></dl>
+      <div className="detail-section"><h3>Request headers</h3><HeaderList headers={detail.event.headers} /></div>
+      <div className="detail-section"><h3>Request body</h3><BodyBlock available={detail.event.bodyAvailable} contentType={detail.event.bodyContentType} sizeBytes={detail.event.bodySizeBytes} truncated={false} body={detail.body} /></div>
+      <div className="detail-section"><h3>Deliveries ({detail.deliveries.length})</h3><div className="delivery-list">
+        {detail.deliveries.map((delivery) => <div className="delivery-item is-clickable" key={delivery.id} role="button" tabIndex={0} onClick={() => void toggleDelivery(delivery)} onKeyDown={(keyEvent) => { if (keyEvent.key === "Enter" || keyEvent.key === " ") { keyEvent.preventDefault(); void toggleDelivery(delivery); } }}>
+          <div className="delivery-item-head"><b className={`outcome-badge ${delivery.outcome}`}>{delivery.outcome.replace("_", " ")}</b><code>{delivery.routeUrl}</code><span className="muted">{delivery.responseStatus ?? delivery.errorMessage ?? "—"}</span><span className="muted">{delivery.durationMs} ms</span></div>
+          {expandedDeliveryId === delivery.id && <div className="delivery-response">
+            <div className="detail-section"><h3>Response headers</h3><HeaderList headers={delivery.responseHeaders} /></div>
+            <div className="detail-section"><h3>Response body</h3>{delivery.responseBodyAvailable ? <BodyBlock available contentType={delivery.responseBodyContentType} sizeBytes={delivery.responseBodySizeBytes} truncated={delivery.responseBodyTruncated} body={deliveryBodies[delivery.id] ?? (delivery.id in deliveryBodies ? null : undefined)} /> : <p className="kv-empty">{delivery.errorMessage ?? "No response body."}</p>}</div>
+          </div>}
+        </div>)}
+        {!detail.deliveries.length && <p className="kv-empty">No delivery attempts yet.</p>}
+      </div></div>
+    </div>}
+  </div></div>;
+}
+
+function DeliveryDetailDialog({ deliveryId, onClose, onError }: { deliveryId: string; onClose: () => void; onError: (reason: unknown) => void }) {
+  const [detail, setDetail] = useState<{ delivery: Delivery; responseBody: Base64Body | null } | null>(null);
+
+  useEffect(() => { void Api.delivery(deliveryId).then(setDetail).catch(onError); }, [deliveryId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return <div className="dialog-backdrop" role="presentation"><div className="dialog detail-dialog"><div className="dialog-heading"><div><p className="eyebrow">DELIVERY</p><h2>{detail ? detail.delivery.routeUrl : "Loading…"}</h2></div><button type="button" className="icon-button" onClick={onClose}>×</button></div>
+    {!detail ? <p className="muted">Loading delivery…</p> : <div className="dialog-body">
+      <dl className="detail-meta"><dt>Outcome</dt><dd><b className={`outcome-badge ${detail.delivery.outcome}`}>{detail.delivery.outcome.replace("_", " ")}</b></dd><dt>Status</dt><dd>{detail.delivery.responseStatus ?? "—"}</dd><dt>Duration</dt><dd>{detail.delivery.durationMs} ms</dd><dt>Attempted</dt><dd>{relativeTime(detail.delivery.attemptedAt)}</dd></dl>
+      {detail.delivery.errorMessage && <p className="kv-empty">{detail.delivery.errorMessage}</p>}
+      <div className="detail-section"><h3>Response headers</h3><HeaderList headers={detail.delivery.responseHeaders} /></div>
+      <div className="detail-section"><h3>Response body</h3><BodyBlock available={detail.delivery.responseBodyAvailable} contentType={detail.delivery.responseBodyContentType} sizeBytes={detail.delivery.responseBodySizeBytes} truncated={detail.delivery.responseBodyTruncated} body={detail.responseBody} /></div>
+    </div>}
+  </div></div>;
+}
+
+function HeaderList({ headers }: { headers: { name: string; value: string; isRedacted: boolean }[] }) {
+  if (!headers.length) return <p className="kv-empty">No headers recorded.</p>;
+  return <div className="kv-table">{headers.map((header) => <div className={`kv-row ${header.isRedacted ? "is-redacted" : ""}`} key={header.name}><span>{header.name}</span><span>{header.value}</span></div>)}</div>;
+}
+
+function BodyBlock({ available, contentType, sizeBytes, truncated, body }: { available: boolean; contentType: string | null; sizeBytes: number; truncated: boolean; body: Base64Body | null | undefined }) {
+  if (!available) return <p className="kv-empty">No body recorded.</p>;
+  return <>
+    <p className="muted">{sizeBytes.toLocaleString()} B · {contentType ?? "unknown content type"}</p>
+    {body === undefined ? <p className="delivery-loading">Loading body…</p> : body === null ? <p className="kv-empty">Body is no longer available.</p> : <pre className="body-block">{decodeBase64Text(body.content)}</pre>}
+    {truncated && <p className="truncated-note">Truncated — response exceeded the stored size limit.</p>}
+  </>;
+}
+
+function decodeBase64Text(base64: string) {
+  try {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return "(unable to decode body)";
+  }
+}
 function Login({ onSuccess, onError, toast }: { onSuccess: () => void; onError: (reason: unknown) => void; toast: Toast }) { return <main className="login-screen"><form className="login-card" onSubmit={async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await Api.login(String(data.get("username")), String(data.get("password"))); onSuccess(); } catch (reason) { onError(reason); } }}><span className="brand-mark large">S</span><p className="eyebrow">SWITCHBOARD</p><h1>Webhook control plane</h1><p>Sign in to manage your Endpoint workspace.</p><label>Username<input name="username" autoComplete="username" /></label><label>Password<input name="password" type="password" autoComplete="current-password" /></label><button className="primary-button">Sign in</button>{toast?.tone === "error" && <div className="login-error">{toast.message}</div>}</form></main>; }
 function RailButton({ icon, label, active, onClick }: { icon: string; label: string; active?: boolean; onClick: () => void }) { return <button className={`rail-button ${active ? "is-active" : ""}`} onClick={onClick} title={label}><span>{icon}</span></button>; }
 function Metric({ label, value, hint }: { label: string; value: string; hint: string }) { return <div className="metric"><span>{label}</span><strong>{value}</strong><small>{hint}</small></div>; }

@@ -135,9 +135,19 @@ export const deliverySchema = z.object({
   routeUrl: z.string().url(),
   outcome: deliveryOutcomeSchema,
   responseStatus: z.number().int().min(100).max(599).nullable(),
+  responseHeaders: z.array(eventHeaderSchema),
+  responseBodyAvailable: z.boolean(),
+  responseBodyContentType: z.string().nullable(),
+  responseBodySizeBytes: z.number().int().nonnegative(),
+  responseBodyTruncated: z.boolean(),
   errorMessage: z.string().nullable(),
   durationMs: z.number().int().nonnegative(),
   attemptedAt: isoDateSchema,
+});
+
+export const deliveryResponseBodySchema = z.object({
+  encoding: z.literal("base64"),
+  content: z.string(),
 });
 
 export const deliveryListQuerySchema = paginationQuerySchema.extend({
@@ -165,6 +175,11 @@ export const deliveryListResponseSchema = z.object({
 
 export const deliveryResponseSchema = z.object({
   delivery: deliverySchema,
+});
+
+export const deliveryDetailResponseSchema = z.object({
+  delivery: deliverySchema,
+  responseBody: deliveryResponseBodySchema.nullable(),
 });
 
 export type ApiError = z.infer<typeof apiErrorSchema>;
